@@ -3,7 +3,6 @@ import { player } from './player.js';
 const createPlayer = async (name) => {
   const {
     createSession,
-    // getPlayerUuid,
     createAndJoinNewGame,
     startGame,
     joinGame,
