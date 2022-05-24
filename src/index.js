@@ -1,107 +1,62 @@
 import { player } from './player.js';
 
-let allowedToStart = true;
-let games = [];
-
-const createPlayer = async (name, callback) => {
+const createPlayer = async (name) => {
   const {
     createSession,
-    getPlayerUuid,
+    // getPlayerUuid,
     createAndJoinNewGame,
     startGame,
     joinGame,
-    getGame,
-  } = await player(name, true, callback);
-  createSession();
+    playRound,
+  } = await player(name, false);
 
-  return { createAndJoinNewGame, getPlayerUuid, startGame, joinGame, getGame };
+  await createSession();
+
+  return { createAndJoinNewGame, startGame, joinGame, playRound };
 };
 
-const sleep = (ms) => {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => resolve(), ms);
-  });
+const startMany = async ({ nrPlayers, nrGames }) => {
+  console.log('Starting ' + nrGames + ' games with ' + nrPlayers + ' players');
+  let games = [];
+
+  for (let i = 0; i < nrGames; i++) {
+    let game = await start(nrPlayers);
+    console.log('\nGame ' + i + ' won after ' + game.state.round + ' rounds');
+
+    games.push(game);
+  }
 };
 
-const startMany = (nrGamesToPlay) => {
-  console.log('Starting ' + nrGamesToPlay + ' games');
-  const callback = (value) => {
-    if (allowedToStart && nrGamesToPlay > games.length) {
-      let gameNr = games.length + 1;
-      console.log(
-        'Game ' + gameNr + ' won after ' + value.gameState.round + ' rounds'
-      );
-      games.push(value);
-      start(callback);
-    }
+const start = async (nrPlayers) => {
+  let game;
 
-    if (allowedToStart && nrGamesToPlay === games.length) {
-      console.log('Done');
-      console.log(games);
-    }
-
-    allowedToStart = false;
-  };
-
-  start(callback);
-};
-
-const start = async (callback) => {
-  if (!allowedToStart) return;
-
-  console.log('Starting new game');
+  console.log('Starting new game with ' + nrPlayers + ' players');
 
   const players = [];
 
-  players.push(await createPlayer('firstPlayer', callback));
-  players.push(await createPlayer('secondPlayer', callback));
-  players.push(await createPlayer('thirdPlayer', callback));
-  players.push(await createPlayer('fourtPlayer', callback));
-  players.push(await createPlayer('fifthPlayer', callback));
-  players[0].createAndJoinNewGame('game');
-  await sleep(200);
+  for (let i = 0; i < nrPlayers; i++) {
+    players.push(await createPlayer(`Player-${i}`));
+  }
 
-  // players.forEach((player) => {
-  //   console.log(player.getPlayerUuid());
-  // });
+  game = await players[0].createAndJoinNewGame('game');
 
-  const getGame = () => {
-    console.log('Getting game');
-    return new Promise((resolve, reject) => {
-      let started = false;
+  // console.log(game.state);
 
-      while (!started) {
-        // console.log('Trying to find the game reference');
-        let game = players[0].getGame();
-        if (game) {
-          console.log('Game found');
-          started = true;
-          resolve(game);
-        }
-      }
-    });
-  };
+  for (let i = 1; i < nrPlayers; i++) {
+    await players[i].joinGame(game.uuid);
+  }
 
-  const startGame = (game) => {
-    return new Promise((resolve, reject) => {
-      players[1].joinGame(game.uuid);
-      players[2].joinGame(game.uuid);
-      players[3].joinGame(game.uuid);
-      players[4].joinGame(game.uuid);
+  game = await players[0].startGame();
 
-      setTimeout(() => {
-        players[0].startGame();
-        resolve();
-      }, 100);
-    });
-  };
+  do {
+    for (let i = 0; i < players.length; i++) {
+      // console.log(i);
+      game = await players[i].playRound();
+      // console.log(game);
+    }
+  } while (game.state.status !== 'won');
 
-  getGame().then((game) => {
-    startGame(game).then(() => {
-      // console.log('Game started');
-      allowedToStart = true;
-    });
-  });
+  if (game.state.status === 'won') return game;
 };
 
-startMany(5);
+startMany({ nrPlayers: 5, nrGames: 3 });

@@ -1,33 +1,19 @@
-import { io } from 'socket.io-client';
+import fetch from 'node-fetch';
 
-export const player = async (email, debug, callback) => {
-  let socket;
-  try {
-    socket = io('ws://localhost:4000');
-  } catch (e) {
-    console.log(e);
-  }
-
+export const player = async (email, debug) => {
   let game = null;
-  let playerUuid = null;
-  let round = 0;
-  let allowedToEmit = true;
+  let session = null;
 
   debug && console.log('Creating player ' + email);
 
   const getGame = () => game;
 
-  const getPlayerUuid = () => playerUuid;
+  const getPlayerUuid = () => session.user.uuid;
 
   const getPlayer = () => {
-    return game.players.find((player) => player.user.uuid === playerUuid);
-  };
-
-  const sleep = (ms) => {
-    return new Promise((resolve, reject) => {
-      debug && console.log('Sleeping for ' + ms + 'ms');
-      setTimeout(() => resolve(), ms);
-    });
+    return game.players.find(
+      (player) => player.user.uuid === session.user.uuid
+    );
   };
 
   const getHex = () => {
@@ -39,358 +25,403 @@ export const player = async (email, debug, callback) => {
     );
   };
 
-  socket.on('pushConnection', (socket) => {
-    debug && console.log('Connected!');
-  });
+  const createSession = async () => {
+    const response = await fetch(
+      'http://localhost:4000/gameapi/createSession',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name: email, email: email }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
 
-  const createSession = () => {
-    socket.emit('createSession', email, email, async (session) => {
-      debug && console.log('Session created');
-      playerUuid = session.user.uuid;
+    const data = await response.json();
+    session = data;
+
+    debug && console.log(session);
+  };
+
+  const createAndJoinNewGame = async (name) => {
+    debug && console.log('Creating new game ' + name);
+
+    const response = await fetch(
+      'http://localhost:4000/gameapi/createAndJoinNewGame',
+      {
+        method: 'POST',
+        body: JSON.stringify({ gameName: name, user: session.user }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    const data = await response.json();
+    game = data;
+
+    debug && console.log(game);
+
+    return game;
+  };
+
+  const joinGame = async (gameUuid) => {
+    debug && console.log(email + ': ' + 'Joining game ' + gameUuid);
+
+    const response = await fetch('http://localhost:4000/gameapi/joinGame', {
+      method: 'POST',
+      body: JSON.stringify({ gameUuid: gameUuid, user: session.user }),
+      headers: { 'Content-Type': 'application/json' },
     });
+
+    const data = await response.json();
+    game = data;
   };
 
-  const createAndJoinNewGame = (name) => {
-    console.log('Creating new game ' + name);
-    socket.emit('createAndJoinNewGame', name);
-  };
+  const playRound = async () => {
+    await refreshGame();
 
-  const joinGame = (gameUuid) => {
-    socket.emit('joinGame', gameUuid);
-  };
+    if (game.state.status !== 'playing') return game;
 
-  socket.on('pushActiveGame', async (newGame) => {
-    // debug && console.log(email + ': ' + 'Got new game!');
-    // debug && console.log(email + ': ' + 'Processing state is ' + processing);
+    if (game.state.currentRound.playerUuid !== session.user.uuid) return game;
 
-    // if (processing) return;
+    debug && console.log(`Playing round ${game.state.round}. `);
 
-    game = newGame;
+    // console.log(game.state.currentRound);
 
-    if (game.state.status === 'won') {
-      debug && console.log('Game won after ' + game.state.round + ' rounds');
-      socket.disconnect();
-      // console.log(game.players);
-      // console.log('There may be a callback and ai am ' + email);
-      if (callback) {
-        // console.log('There is a callback and ai am ' + email);
-        callback({ gameState: game.state, players: game.players });
-      }
-    }
+    while (game.state.currentRound.playerUuid === session.user.uuid) {
+      !debug && process.stdout.write(`Playing round ${game.state.round}. `);
+      !debug &&
+        process.stdout.write(
+          `Cities emptied ${game.state.numberOfCitiesEmptied} / ${game.numberOfCitiesToEmpty}.\r`
+        );
 
-    if (game.state.status === 'playing') {
-      // console.log('We are playing');
-      round = game.state.round;
-
-      // console.log(game.state);
-
-      if (game.state.currentRound.playerUuid === playerUuid) {
-        debug &&
-          console.log(
-            'It is ' +
-              email +
-              's round with ' +
-              game.state.currentRound.movesLeft +
-              ' moves left'
-          );
-
-        // console.log(game.state.currentRound);
-        // await sleep(100);
-
-        // await sleep(1000);
-        debug && console.log(round);
-        console.log(email + ': ' + 'Setting processing to true');
-
-        const pickedAchievement = await tryAchieve();
-        if (pickedAchievement) {
-          debug && console.log(email + ': ' + 'Achieved successfully');
-          // processing = false;
-          return;
-        }
-
-        const traded = await tryTrade();
-        if (traded) {
-          debug && console.log(email + ': ' + 'Traded successfully');
-          // processing = false;
-          return;
-        }
-
-        const ditched = await ditchIfFull();
-        if (ditched) {
-          debug && console.log(email + ': ' + 'Ditched successfully');
-          // processing = false;
-        }
-
-        const loaded = await tryLoad();
-        if (loaded) {
-          debug && console.log(email + ': ' + 'Loaded successfully');
-          // processing = false;
-          return;
-        }
-
-        const sailed = await trySail();
-        if (sailed) {
-          debug && console.log(email + ': ' + 'Sailed successfully');
-          // processing = false;
-          return;
-        }
-
-        endRound();
-        // processing = false;
-      }
-    }
-  });
-
-  const ditchIfFull = () => {
-    return new Promise((resolve, reject) => {
-      let player = getPlayer();
-
-      if (player.cargo.length === 5) {
-        debug &&
-          console.log(
+      debug &&
+        console.log(
+          'It is ' +
             email +
-              ': ' +
-              'Cargo hold full, ditching a ' +
-              player.cargo[0] +
-              ' cube'
-          );
-
-        if (!allowedToEmit) {
-          debug && console.log(email + ': ' + 'Ditching. Not allowed to emit');
-          resolve(false);
-          return;
-        }
-
-        allowedToEmit = false;
-        debug &&
-          console.log(
-            email + ': ' + 'Emiting ditchCargo with ' + player.cargo[0]
-          );
-
-        socket.emit('ditchCargo', [player.cargo[0]], (valid) => {
-          allowedToEmit = true;
-          resolve(valid);
-          // processing = false;
-
-          return;
-        });
-      } else {
-        resolve(false);
-        // processing = false;
-      }
-    });
-  };
-
-  const tryAchieve = () => {
-    return new Promise((resolve, reject) => {
-      debug && console.log(email + ': ' + 'Trying to pick an achievement');
-
-      const availableAchievements = game.state.currentRound.achievementsEarned;
-
-      if (availableAchievements.length === 0) {
-        resolve(false);
-        // processing = false;
-        return;
-      }
-      if (!allowedToEmit) {
-        debug &&
-          console.log(
-            email + ': ' + 'Picking achievement. Not allowed to emit'
-          );
-        resolve(false);
-        return;
-      }
-
-      allowedToEmit = false;
-
+            's round with ' +
+            game.state.currentRound.movesLeft +
+            ' moves left'
+        );
       debug &&
         console.log(
-          email +
-            ': ' +
-            'Emiting pickAchievement with ' +
-            availableAchievements[0]
+          `Cities emptied ${game.state.numberOfCitiesEmptied} / ${game.numberOfCitiesToEmpty}. `
         );
 
-      socket.emit('pickAchievement', availableAchievements[0], (valid) => {
-        resolve(valid);
-        allowedToEmit = true;
-        // processing = false;
-      });
-    });
+      const pickedAchievement = await tryAchieve();
+      if (pickedAchievement) {
+        debug && console.log(email + ': ' + 'Achieved successfully');
+        continue;
+      }
+
+      const traded = await tryTrade();
+      if (traded) {
+        debug && console.log(email + ': ' + 'Traded successfully');
+        continue;
+      }
+
+      const ditched = await ditchIfFull();
+      if (ditched) {
+        debug && console.log(email + ': ' + 'Ditched successfully');
+        continue;
+      }
+
+      const loaded = await tryLoad();
+      if (loaded) {
+        debug && console.log(email + ': ' + 'Loaded successfully');
+        continue;
+      }
+
+      const sailed = await trySail();
+      if (sailed) {
+        debug && console.log(email + ': ' + 'Sailed successfully');
+        continue;
+      }
+
+      const endedRound = await endRound();
+      if (endedRound) {
+        debug && console.log(email + ': ' + 'Ended round successfully');
+        continue;
+      }
+    }
+
+    return game;
   };
 
-  const tryTrade = () => {
-    return new Promise((resolve, reject) => {
-      debug && console.log(email + ': ' + 'Trying to trade');
-      const hex = getHex();
+  const refreshGame = async () => {
+    debug && console.log(email + ': ' + 'Refreshing game data');
+    const response = await fetch(
+      'http://localhost:4000/gameapi/getGame/' + game.uuid
+    );
 
-      if (!game.state.currentRound.movesAvailable.includes('trade')) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-
-      // If we are in a city, let's try to trade or load
-      if (!hex.city) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-
-      // first let's trade if there are contracts
-      if (hex.city.contracts.length === 0) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-
-      if (!allowedToEmit) {
-        debug && console.log(email + ': ' + 'Trading. Not allowed to emit');
-        resolve(false);
-        return;
-      }
-
-      allowedToEmit = false;
-
-      debug &&
-        console.log(
-          email + ': ' + 'Emiting makeTrades with ' + hex.city.contracts[0]
-        );
-
-      socket.emit('makeTrades', [hex.city.contracts[0]], (valid) => {
-        // processing = false;
-        resolve(valid);
-        allowedToEmit = true;
-
-        return;
-      });
-
-      // processing = false;
-      resolve(false);
-    });
-  };
-
-  const tryLoad = () => {
-    return new Promise((resolve, reject) => {
-      debug && console.log(email + ': ' + 'Trying to load');
-      const hex = getHex();
-      const player = getPlayer();
-
-      if (!hex.city) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-
-      if (player.cargo.length === 5) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-
-      if (!game.state.currentRound.movesAvailable.includes('load')) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-
-      if (!allowedToEmit) {
-        debug &&
-          console.log(email + ': ' + 'Cargo loading. Not allowed to emit');
-        resolve(false);
-        return;
-      }
-
-      allowedToEmit = false;
-
-      const cargoToLoad = hex.city.goods;
-      debug &&
-        console.log(email + ': ' + 'Emiting loadCargo with ' + cargoToLoad[0]);
-      socket.emit('loadCargo', [cargoToLoad[0]], (valid) => {
-        // processing = false;
-        resolve(valid);
-        allowedToEmit = true;
-        return;
-      });
-    });
-  };
-
-  const trySail = () => {
-    return new Promise((resolve, reject) => {
-      debug && console.log(email + ': ' + 'Trying to sail');
-      if (!game.state.currentRound.movesAvailable.includes('sail')) {
-        // processing = false;
-        resolve(false);
-
-        return;
-      }
-      const hexesWithinRange = game.state.currentRound.hexesWithinRange;
-
-      const positionsWithCities =
-        game.state.currentRound.hexesWithinRange.filter((ah) => {
-          const boardHex = game.board.find(
-            (bh) => bh.column === ah.column && bh.row === ah.row
-          );
-          if (boardHex.city) return true;
-          return false;
-        });
-
-      if (!allowedToEmit) {
-        debug && console.log(email + ': ' + 'Sailing. Not allowed to emit');
-        resolve(false);
-        return;
-      }
-
-      allowedToEmit = false;
-
-      const randomDestination = Math.floor(
-        Math.random() * positionsWithCities.length
-      );
-      debug &&
-        console.log(
-          email +
-            ': ' +
-            'Emiting sailTo with ' +
-            positionsWithCities[randomDestination]
-        );
-      socket.emit('sailTo', positionsWithCities[randomDestination], (valid) => {
-        // processing = false;
-        resolve(valid);
-        allowedToEmit = true;
-
-        return;
-      });
-    });
-  };
-
-  const endRound = () => {
-    if (!allowedToEmit) {
-      debug && console.log(email + ': ' + 'Endround. Not allowed to emit');
+    if (!response.ok) {
+      console.log('Error fetching game data');
       return;
     }
 
-    debug && console.log(email + ': ' + 'Emitting endRound');
-    socket.emit('endRound');
-    // processing = false;
+    const data = await response.json();
+    game = data;
   };
 
-  socket.on('error', (error) => {
-    console.log('Got an error: ' + error);
-  });
+  const ditchIfFull = async () => {
+    debug && console.log(email + ': ' + 'Trying to ditch cargo');
+    let player = getPlayer();
 
-  const startGame = () => {
+    if (player.cargo.length === 5) {
+      debug &&
+        console.log(
+          email +
+            ': ' +
+            'Cargo hold full, ditching a ' +
+            player.cargo[0] +
+            ' cube'
+        );
+
+      const response = await fetch(
+        'http://localhost:4000/gameapi/playing/ditchCargo',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            gameUuid: game.uuid,
+            cargo: [player.cargo[0]],
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+
+      if (!response.ok) {
+        debug && console.log(email + ': ' + 'Ditching failed');
+
+        return false;
+      }
+
+      const data = await response.json();
+      game = data;
+      return true;
+    }
+
+    return false;
+  };
+
+  const tryAchieve = async () => {
+    debug && console.log(email + ': ' + 'Trying to pick an achievement');
+
+    const availableAchievements = game.state.currentRound.achievementsEarned;
+
+    if (availableAchievements.length === 0) {
+      return false;
+    }
+
+    debug &&
+      console.log(
+        email +
+          ': ' +
+          'POSTING pickAchievement with ' +
+          availableAchievements[0]
+      );
+
+    const response = await fetch(
+      'http://localhost:4000/gameapi/playing/pickAchievement',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          gameUuid: game.uuid,
+          achievement: availableAchievements[0],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    if (!response.ok) {
+      debug && console.log(email + ': ' + 'Achieving failed');
+
+      return false;
+    }
+
+    const data = await response.json();
+    game = data;
+
+    return true;
+  };
+
+  const tryTrade = async () => {
+    debug && console.log(email + ': ' + 'Trying to trade');
+    const hex = getHex();
+
+    if (!game.state.currentRound.movesAvailable.includes('trade')) {
+      return false;
+    }
+
+    // If we are in a city, let's try to trade or load
+    if (!hex.city) {
+      return false;
+    }
+
+    // first let's trade if there are contracts
+    if (hex.city.contracts.length === 0) {
+      return false;
+    }
+
+    debug &&
+      console.log(
+        email + ': ' + 'POSTING makeTrades with ' + [hex.city.contracts[0]]
+      );
+
+    const response = await fetch(
+      'http://localhost:4000/gameapi/playing/makeTrades',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          gameUuid: game.uuid,
+          contracts: [hex.city.contracts[0]],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    if (!response.ok) {
+      debug && console.log(email + ': ' + 'Trade failed');
+
+      return false;
+    }
+
+    const data = await response.json();
+    game = data;
+
+    return true;
+  };
+
+  const tryLoad = async () => {
+    debug && console.log(email + ': ' + 'Trying to load');
+    const hex = getHex();
+    const player = getPlayer();
+
+    if (!hex.city) {
+      return false;
+    }
+
+    if (player.cargo.length === 5) {
+      return false;
+    }
+
+    if (!game.state.currentRound.movesAvailable.includes('load')) {
+      return false;
+    }
+
+    const cargoToLoad = hex.city.goods;
+    debug &&
+      console.log(email + ': ' + 'POSTING loadCargo with ' + cargoToLoad[0]);
+
+    const response = await fetch(
+      'http://localhost:4000/gameapi/playing/loadCargo',
+      {
+        method: 'POST',
+        body: JSON.stringify({ gameUuid: game.uuid, cargo: [cargoToLoad[0]] }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    if (!response.ok) {
+      debug && console.log(email + ': ' + 'Loding failed');
+
+      return false;
+    }
+
+    const data = await response.json();
+    game = data;
+
+    return true;
+  };
+
+  const trySail = async () => {
+    debug && console.log(email + ': ' + 'Trying to sail');
+    if (!game.state.currentRound.movesAvailable.includes('sail')) {
+      return false;
+    }
+
+    const positionsWithCities = game.state.currentRound.hexesWithinRange.filter(
+      (ah) => {
+        const boardHex = game.board.find(
+          (bh) => bh.column === ah.column && bh.row === ah.row
+        );
+        if (boardHex.city) return true;
+        return false;
+      }
+    );
+
+    const randomDestination = Math.floor(
+      Math.random() * positionsWithCities.length
+    );
+    debug &&
+      console.log(
+        email +
+          ': ' +
+          'POSTING sailTo with ' +
+          positionsWithCities[randomDestination]
+      );
+
+    const response = await fetch(
+      'http://localhost:4000/gameapi/playing/sailTo',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          gameUuid: game.uuid,
+          position: positionsWithCities[randomDestination],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    if (!response.ok) {
+      debug && console.log(email + ': ' + 'Sailing failed');
+
+      return false;
+    }
+
+    const data = await response.json();
+    game = data;
+
+    return true;
+  };
+
+  const endRound = async () => {
+    debug && console.log(email + ': ' + 'POSTING endRound');
+
+    const response = await fetch(
+      'http://localhost:4000/gameapi/playing/endRound',
+      {
+        method: 'POST',
+        body: JSON.stringify({ gameUuid: game.uuid }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    if (!response.ok) {
+      debug && console.log(email + ': ' + 'Ending round failed');
+
+      return false;
+    }
+
+    const data = await response.json();
+    game = data;
+
+    return true;
+  };
+
+  const startGame = async () => {
+    debug && console.log(email + ': ' + 'Starting game ' + game.uuid);
     if (!game.uuid) {
       console.log('No game to start');
       return;
     }
 
-    socket.emit('startGame', game.uuid);
+    const response = await fetch('http://localhost:4000/gameapi/startGame', {
+      method: 'POST',
+      body: JSON.stringify({ gameUuid: game.uuid, user: session.user }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const data = await response.json();
+    game = data;
+
+    return game;
   };
 
   return {
@@ -400,5 +431,6 @@ export const player = async (email, debug, callback) => {
     startGame,
     joinGame,
     getGame,
+    playRound,
   };
 };
