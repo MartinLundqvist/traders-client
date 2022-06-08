@@ -1,13 +1,17 @@
-import { player } from './player.js';
+import { player } from './player_cj.js';
+
+const DEBUG_MODE = process.env.DEBUG_MODE || 'false';
 
 const createPlayer = async (name) => {
+  const debug = DEBUG_MODE === 'true' ? true : false;
+
   const {
     createSession,
     createAndJoinNewGame,
     startGame,
     joinGame,
     playRound,
-  } = await player(name, false);
+  } = await player(name, debug);
 
   await createSession();
 
@@ -48,14 +52,19 @@ const start = async (nrPlayers) => {
   game = await players[0].startGame();
 
   do {
+    let won = false;
     for (let i = 0; i < players.length; i++) {
       // console.log(i);
       game = await players[i].playRound();
+      // console.log(game.state.status);
       // console.log(game);
     }
   } while (game.state.status !== 'won');
 
-  if (game.state.status === 'won') return game;
+  if (game.state.status === 'won') {
+    console.log('game won');
+    return game;
+  }
 };
 
-startMany({ nrPlayers: 5, nrGames: 3 });
+startMany({ nrPlayers: 5, nrGames: 5 });
